@@ -8,6 +8,9 @@
 - Browser checks confirmed account creation, a 100.25 credit, duplicate-reference rejection, overdraft rejection, and a 10.25 transfer updating both account cards.
 - The new database is a dedicated Supabase Free project; Vercel hosting uses a verified Hobby-plan team. The server connects with a restricted database role, certificate and hostname verification, and a private schema with RLS. Supabase security advisors returned no findings.
 - The responsive UI is served by the same FastAPI application; deployment uses persistent PostgreSQL, while local development retains SQLite.
+- GitHub Actions: **128 passed**, with both SQLite and the PostgreSQL 17 service enabled. Ruff checks passed.
+- Public deployment: <https://atomic-ledger-assessment.vercel.app>. Anonymous HTTP checks verified health, API documentation, a real 0.01 transfer, duplicate and overdraft rejection, and a reverse transfer restoring exact account balances. Four corresponding ledger entries persisted in hosted PostgreSQL.
+- The live dashboard loaded from the hosted API without browser console warnings/errors. A 390px mobile layout and the desktop layout were visually checked. Filtered activity search and CSV download were verified in the browser.
 
 ## Original API baseline
 

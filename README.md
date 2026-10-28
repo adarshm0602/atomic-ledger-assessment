@@ -1,5 +1,7 @@
 # Atomic Ledger
 
+**Live application:** [atomic-ledger-assessment.vercel.app](https://atomic-ledger-assessment.vercel.app) · [Live API docs](https://atomic-ledger-assessment.vercel.app/docs)
+
 A full-stack account ledger for the supplied Full Stack Developer Assessment. The responsive dashboard manages accounts, records credits and debits, searches transaction history, exports CSV, and transfers money. Every money movement and its ledger entries commit together or roll back together. FastAPI serves both the UI and API; SQLite supports local use and PostgreSQL supports durable hosted data.
 
 ## Run locally
