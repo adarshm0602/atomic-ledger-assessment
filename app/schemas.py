@@ -75,6 +75,14 @@ class PaginationQuery(Input):
     page_size: Annotated[int, BeforeValidator(positive_integer), Field(ge=1, le=100)] = 20
 
 
+class ActivityQuery(PaginationQuery):
+    account_id: Annotated[
+        int | None, BeforeValidator(positive_integer), Field(gt=0, le=9_223_372_036_854_775_807)
+    ] = None
+    type: Literal["credit", "debit"] | None = None
+    q: Annotated[str, StringConstraints(max_length=128)] = ""
+
+
 class Account(BaseModel):
     id: int
     name: str
@@ -91,6 +99,25 @@ class Transaction(BaseModel):
     reference_id: str
     transfer_id: int | None
     created_at: str
+
+
+class ActivityTransaction(Transaction):
+    account_name: str
+
+
+class DailyActivity(BaseModel):
+    date: str
+    credit: str
+    debit: str
+
+
+class Overview(BaseModel):
+    total_balance: str
+    account_count: int
+    transaction_count: int
+    credited: str
+    debited: str
+    daily: list[DailyActivity]
 
 
 class Transfer(BaseModel):

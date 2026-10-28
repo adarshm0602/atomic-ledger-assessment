@@ -1,6 +1,6 @@
 # API documentation
 
-Base URL: `http://127.0.0.1:8000`. All POST bodies require `Content-Type: application/json` (application JSON subtype media types ending in `+json` are also accepted). Authentication is not required for this local assessment.
+Base URL locally: `http://127.0.0.1:8000`; on the deployed app, use the same paths on its HTTPS origin. All POST bodies require `Content-Type: application/json` (application JSON subtype media types ending in `+json` are also accepted). Authentication is not required for this shared demo assessment. The dashboard is served at `/` and interactive API documentation remains at `/docs`.
 
 Amounts are returned as fixed two-decimal strings. Requests accept decimal strings or JSON numbers. Use strings in clients that may round decimal numbers. IDs in JSON bodies must be integers. Timestamps are UTC ISO 8601 strings.
 
@@ -194,3 +194,21 @@ curl http://127.0.0.1:8000/accounts/2
 ```
 
 Use the actual returned IDs when the database already contains accounts, or use `scripts/demo.py` to handle IDs automatically.
+
+## Dashboard summary
+
+`GET /overview` → **200**
+
+Returns `total_balance`, `account_count`, `transaction_count`, `credited`, `debited`, and `daily`. Monetary values are decimal strings. `daily` contains seven UTC dates with `date`, `credit`, and `debit` values. Transfer legs count toward the credit/debit totals and transaction count; they do not change combined account balance. All summary queries share a database snapshot.
+
+## Filtered activity
+
+`GET /activity?page=1&page_size=20&account_id=1&type=credit&q=invoice` → **200**
+
+Uses the standard pagination envelope. `data` contains transaction objects with an additional `account_name`. Optional filters are a positive `account_id`, `type` (`credit` or `debit`), and `q` (maximum 128 characters). Search is a case-insensitive literal substring of account name or reference; SQL wildcard characters are escaped. Filters combine with AND. Results are ordered by transaction ID descending. A nonexistent filtered account returns 404. Invalid or unknown query fields return 422.
+
+## Load sample data
+
+`POST /demo/seed` with body `{}` → **200**
+
+Returns `{"seeded":true}` only if the workspace was empty and sample records were inserted. Otherwise returns `{"seeded":false}` without changing existing accounts or transactions. The seed operation is atomic and follows the same database writer lock as financial operations. It creates three example accounts and eleven transactions. `DEMO_SEED=true` requests the same idempotent behavior at server startup.

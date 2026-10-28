@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from app.db import MAX_CENTS, Database
@@ -11,6 +11,7 @@ def now():
 
 
 def money(cents: int):
+    cents = int(cents)
     return f"{cents // 100}.{cents % 100:02d}"
 
 
@@ -71,11 +72,11 @@ def insert_transaction(
     cursor = conn.execute(
         "INSERT INTO transactions "
         "(account_id, type, amount_cents, balance_after_cents, reference_id, transfer_id, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
         (account_id, kind, amount, balance, reference, transfer_id, timestamp),
     )
     return transaction_result(
-        conn.execute("SELECT * FROM transactions WHERE id = ?", (cursor.lastrowid,)).fetchone()
+        conn.execute("SELECT * FROM transactions WHERE id = ?", (cursor.fetchone()[0],)).fetchone()
     )
 
 
@@ -86,9 +87,9 @@ class Ledger:
     def create_account(self, name):
         with self.db.transaction() as conn:
             cursor = conn.execute(
-                "INSERT INTO accounts(name, created_at) VALUES (?, ?)", (name, now())
+                "INSERT INTO accounts(name, created_at) VALUES (?, ?) RETURNING id", (name, now())
             )
-            return account_result(require_account(conn, cursor.lastrowid))
+            return account_result(require_account(conn, cursor.fetchone()[0]))
 
     def get_account(self, account_id):
         with self.db.connection() as conn:
@@ -140,7 +141,7 @@ class Ledger:
             source_balance = change_balance(conn, data.source_account_id, -amount)
             destination_balance = change_balance(conn, data.destination_account_id, amount)
             cursor = conn.execute(
-                "INSERT INTO transfers(source_account_id, destination_account_id, amount_cents, reference_id, created_at) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO transfers(source_account_id, destination_account_id, amount_cents, reference_id, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id",
                 (
                     data.source_account_id,
                     data.destination_account_id,
@@ -149,7 +150,7 @@ class Ledger:
                     timestamp,
                 ),
             )
-            transfer_id = cursor.lastrowid
+            transfer_id = cursor.fetchone()[0]
             debit = insert_transaction(
                 conn,
                 data.source_account_id,
@@ -180,6 +181,121 @@ class Ledger:
                 "debit_transaction": debit,
                 "credit_transaction": credit,
             }
+
+    def overview(self):
+        with self.db.transaction(write=False) as conn:
+            accounts = conn.execute(
+                "SELECT count(*) AS account_count, coalesce(sum(balance_cents), 0) AS total_balance FROM accounts"
+            ).fetchone()
+            totals = conn.execute(
+                "SELECT count(*) AS transaction_count, coalesce(sum(CASE WHEN type = 'credit' THEN amount_cents ELSE 0 END), 0) AS credited, coalesce(sum(CASE WHEN type = 'debit' THEN amount_cents ELSE 0 END), 0) AS debited FROM transactions"
+            ).fetchone()
+            first_day = (datetime.now(timezone.utc) - timedelta(days=6)).date()
+            rows = conn.execute(
+                "SELECT substr(created_at, 1, 10) AS day, type, sum(amount_cents) AS amount FROM transactions WHERE created_at >= ? GROUP BY substr(created_at, 1, 10), type",
+                (first_day.isoformat(),),
+            ).fetchall()
+            daily = {(row["day"], row["type"]): row["amount"] for row in rows}
+            return {
+                "total_balance": money(accounts[1]),
+                "account_count": accounts[0],
+                "transaction_count": totals[0],
+                "credited": money(totals[1]),
+                "debited": money(totals[2]),
+                "daily": [
+                    {
+                        "date": (first_day + timedelta(days=i)).isoformat(),
+                        "credit": money(
+                            daily.get(((first_day + timedelta(days=i)).isoformat(), "credit"), 0)
+                        ),
+                        "debit": money(
+                            daily.get(((first_day + timedelta(days=i)).isoformat(), "debit"), 0)
+                        ),
+                    }
+                    for i in range(7)
+                ],
+            }
+
+    def activity(self, query):
+        clauses, values = [], []
+        if query.account_id is not None:
+            clauses.append("t.account_id = ?")
+            values.append(query.account_id)
+        if query.type is not None:
+            clauses.append("t.type = ?")
+            values.append(query.type)
+        if query.q:
+            escaped = query.q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            clauses.append(
+                "(lower(t.reference_id) LIKE lower(?) ESCAPE '\\' OR lower(a.name) LIKE lower(?) ESCAPE '\\')"
+            )
+            values.extend([f"%{escaped}%"] * 2)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        join = " FROM transactions t JOIN accounts a ON a.id = t.account_id"
+        with self.db.transaction(write=False) as conn:
+            if query.account_id is not None:
+                require_account(conn, query.account_id)
+            total = conn.execute("SELECT count(*)" + join + where, values).fetchone()[0]
+            rows = conn.execute(
+                "SELECT t.*, a.name AS account_name"
+                + join
+                + where
+                + " ORDER BY t.id DESC LIMIT ? OFFSET ?",
+                [*values, query.page_size, (query.page - 1) * query.page_size],
+            ).fetchall()
+            return self.page(
+                [transaction_result(row) for row in rows], total, query.page, query.page_size
+            )
+
+    def seed_demo(self):
+        # Deliberately only seed an empty workspace; never reset visitor data.
+        with self.db.transaction() as conn:
+            if conn.execute("SELECT 1 FROM accounts LIMIT 1").fetchone():
+                return False
+            samples = [("Operating", 1_824_000), ("Reserve", 825_000), ("Growth Fund", 420_000)]
+            account_ids = []
+            for name, amount in samples:
+                timestamp = (
+                    (datetime.now(timezone.utc) - timedelta(days=6))
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                )
+                cursor = conn.execute(
+                    "INSERT INTO accounts(name, created_at) VALUES (?, ?) RETURNING id",
+                    (name, timestamp),
+                )
+                account_id = cursor.fetchone()[0]
+                account_ids.append(account_id)
+                updated = change_balance(conn, account_id, amount)
+                insert_transaction(
+                    conn,
+                    account_id,
+                    "credit",
+                    amount,
+                    updated,
+                    f"DEMO-OPEN-{account_id}",
+                    timestamp,
+                )
+            movements = [
+                (5, 0, "debit", 128_000, "SUPPLIER-1042"),
+                (5, 1, "credit", 250_000, "RESERVE-TOPUP"),
+                (4, 0, "credit", 452_000, "CLIENT-ACME-018"),
+                (3, 2, "debit", 48_000, "SOFTWARE-ANNUAL"),
+                (2, 0, "debit", 210_000, "TEAM-PAYROLL"),
+                (1, 1, "debit", 75_000, "OFFICE-LEASE"),
+                (0, 0, "credit", 178_000, "CLIENT-NOVA-024"),
+                (0, 2, "credit", 96_000, "INVESTMENT-RETURN"),
+            ]
+            for days, index, kind, amount, reference in movements:
+                account_id = account_ids[index]
+                timestamp = (
+                    (datetime.now(timezone.utc) - timedelta(days=days, hours=1))
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                )
+                updated = change_balance(conn, account_id, amount if kind == "credit" else -amount)
+                insert_transaction(conn, account_id, kind, amount, updated, reference, timestamp)
+            return True
 
     @staticmethod
     def page(data, total, page, page_size):

@@ -4,20 +4,28 @@ import os
 import sqlite3
 from contextlib import asynccontextmanager
 from decimal import Decimal
+from pathlib import Path as FilePath
 from typing import Annotated
 
+import psycopg
 from fastapi import FastAPI, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.routing import APIRoute
+from fastapi.staticfiles import StaticFiles
 from pydantic import BeforeValidator
 from starlette.exceptions import HTTPException
 
 from app.db import Database
 from app.errors import APIError, ErrorResponse, error_body
+from app.postgres import PostgresDatabase
 from app.schemas import (
     Account,
     AccountCreate,
+    ActivityQuery,
+    ActivityTransaction,
+    Input,
+    Overview,
     Page,
     PaginationQuery,
     Transaction,
@@ -90,12 +98,21 @@ PathAccountId = Annotated[
 
 
 def create_app(database_path: str | None = None) -> FastAPI:
-    db = Database(database_path or os.getenv("DATABASE_PATH", "data/ledger.sqlite3"))
+    database_url = os.getenv("DATABASE_URL") if database_path is None else None
+    if os.getenv("VERCEL") and not database_url:
+        raise RuntimeError("DATABASE_URL is required on Vercel; ephemeral SQLite is not supported.")
+    db = (
+        PostgresDatabase(database_url, os.getenv("DATABASE_SCHEMA", "ledger"))
+        if database_url
+        else Database(database_path or os.getenv("DATABASE_PATH", "data/ledger.sqlite3"))
+    )
     ledger = Ledger(db)
 
     @asynccontextmanager
     async def lifespan(app):
         db.initialize()
+        if os.getenv("DEMO_SEED") == "true":
+            ledger.seed_demo()
         yield
 
     app = FastAPI(
@@ -118,6 +135,8 @@ def create_app(database_path: str | None = None) -> FastAPI:
     )
     app.router.route_class = JSONRoute
     app.state.db = db
+    static_dir = FilePath(__file__).parent / "static"
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     @app.exception_handler(APIError)
     async def api_error(request, exc):
@@ -169,6 +188,32 @@ def create_app(database_path: str | None = None) -> FastAPI:
             error_body("internal_error", "The operation could not be completed."), status_code=500
         )
 
+    @app.exception_handler(psycopg.IntegrityError)
+    async def postgres_integrity_error(request, exc):
+        if isinstance(exc, psycopg.errors.UniqueViolation):
+            return JSONResponse(
+                error_body(
+                    "duplicate_transaction", "Reference already exists for an affected account."
+                ),
+                status_code=409,
+            )
+        logger.error("Database integrity failure", exc_info=exc)
+        return JSONResponse(
+            error_body("internal_error", "The operation could not be completed."), status_code=500
+        )
+
+    @app.exception_handler(psycopg.OperationalError)
+    async def postgres_operational_error(request, exc):
+        logger.error("Database unavailable", exc_info=exc)
+        return JSONResponse(
+            error_body(
+                "database_busy",
+                "Database is temporarily unavailable. Retry using the same reference_id.",
+            ),
+            status_code=503,
+            headers={"Retry-After": "1"},
+        )
+
     @app.exception_handler(sqlite3.OperationalError)
     async def operational_error(request, exc):
         if exc.sqlite_errorcode & 0xFF in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
@@ -194,7 +239,20 @@ def create_app(database_path: str | None = None) -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     def root():
-        return RedirectResponse("/docs")
+        return FileResponse(static_dir / "index.html", headers={"Cache-Control": "no-cache"})
+
+    @app.get("/overview", response_model=Overview, tags=["Dashboard"])
+    def overview():
+        return ledger.overview()
+
+    @app.get("/activity", response_model=Page[ActivityTransaction], tags=["Dashboard"])
+    def activity(query: Annotated[ActivityQuery, Query()]):
+        return ledger.activity(query)
+
+    @app.post("/demo/seed", tags=["Dashboard"])
+    def seed_demo(data: Input):
+        """Add sample accounts and activity only when the workspace is empty."""
+        return {"seeded": ledger.seed_demo()}
 
     @app.get("/health", tags=["Health"])
     def health():

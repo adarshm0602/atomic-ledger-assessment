@@ -1,5 +1,16 @@
 # Verification record
 
+## Full application update — 28 October 2026
+
+- Local suite: **124 passed**, with four PostgreSQL-only tests skipped without a test URL.
+- Real Supabase PostgreSQL suite: **4 passed** in the isolated `ledger_test` schema, including concurrent debits, duplicate submissions, seeded summary/search, and forced failure after the second transfer ledger entry.
+- Ruff lint/format checks and JavaScript syntax validation passed.
+- Browser checks confirmed account creation, a 100.25 credit, duplicate-reference rejection, overdraft rejection, and a 10.25 transfer updating both account cards.
+- The new database is a dedicated Supabase Free project; Vercel hosting uses a verified Hobby-plan team. The server connects with a restricted database role, certificate and hostname verification, and a private schema with RLS. Supabase security advisors returned no findings.
+- The responsive UI is served by the same FastAPI application; deployment uses persistent PostgreSQL, while local development retains SQLite.
+
+## Original API baseline
+
 Verified on 28 October 2026 with Python 3.12.12, using the dependencies in `uv.lock`.
 
 | Check | Result |
